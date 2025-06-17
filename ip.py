@@ -54,29 +54,30 @@ class IP:
                     datagrama= datagrama
                 )
 
-                datagrama = header<<512 | segmento
+                datagrama = header + segmento
 
                 self.enlace.enviar(datagrama, next_hop)
+            else:
 
-            header = build_ip_header(
-                version= 4, 
-                ihl= 5, 
-                dscp= dscp, 
-                ecn = ecn, 
-                length= payload, 
-                id= identification, 
-                flags= flags, 
-                frag= frag_offset, 
-                ttl= ttl, 
-                protocol= proto, 
-                s_addr= int(ipaddress.IPv4Address(src_addr)),
-                d_addr= int(ipaddress.IPv4Address(dst_addr))
-            )
-            shift = payload
-            segmento = datagrama - (datagrama>>shift<<shift)
-            datagrama = header<<shift | segmento
+                header = build_ip_header(
+                    version= 4, 
+                    ihl= 5, 
+                    dscp= dscp, 
+                    ecn = ecn, 
+                    length= len(payload) + 20, 
+                    id= identification, 
+                    flags= flags, 
+                    frag= frag_offset, 
+                    ttl= ttl, 
+                    protocol= proto, 
+                    s_addr= int(ipaddress.IPv4Address(src_addr)),
+                    d_addr= int(ipaddress.IPv4Address(dst_addr))
+                )
 
-            self.enlace.enviar(datagrama, next_hop)
+                segmento = datagrama[20:]
+                datagrama = header + segmento
+
+                self.enlace.enviar(datagrama, next_hop)
 
     def _next_hop(self, dest_addr):
         # TODO: Use a tabela de encaminhamento para determinar o próximo salto
@@ -84,9 +85,9 @@ class IP:
         # Retorne o next_hop para o dest_addr fornecido.
 
         bin_dest_addr = bin(int(ipaddress.IPv4Address(dest_addr)))[2:].rjust(32, '0')
-        for i in range(0, 33):
+        for i in range(32, -1, -1):
             try: 
-                next_hop = self.table[i][bin_dest_addr[:i]]
+                next_hop = self.tabela[i][bin_dest_addr[:i]]
             except KeyError:
                 pass
             else:
@@ -113,7 +114,7 @@ class IP:
         # TODO: Guarde a tabela de encaminhamento. Se julgar conveniente,
         # converta-a em uma estrutura de dados mais eficiente.
         
-        self.tabela = {i: dict() for i in range(32, 0, -1)}
+        self.tabela = {i: dict() for i in range(32, -1, -1)}
 
         for cidr, next_hop in tabela:
             address, n_bits_fixos = cidr.split('/')
@@ -137,12 +138,13 @@ class IP:
         next_hop = self._next_hop(dest_addr)
         # TODO: Assumindo que a camada superior é o protocolo TCP, monte o
         # datagrama com o cabeçalho IP, contendo como payload o segmento.
+        length = len(segmento)  # 20 bytes de cabeçalho IP
         header = build_ip_header(
             version= 4, 
             ihl= 5, 
             dscp= 0, 
             ecn = 0, 
-            length= 20+len(bin(segmento))-2 , 
+            length= 20+length , 
             id= self.counter, 
             flags= 0, 
             frag= 0, 
@@ -152,20 +154,21 @@ class IP:
             d_addr= int(ipaddress.IPv4Address(dest_addr))
         )
 
-        datagrama = header<<(len(bin(segmento))-2) | segmento
+        datagrama = header + segmento
+        self.counter += 1
 
         self.enlace.enviar(datagrama, next_hop)
 
 def build_ip_header(*, version, ihl, dscp, ecn, length, id, flags, frag, ttl, protocol, s_addr, d_addr):
     before_checksum = version<<76 | ihl<<72 | dscp<<66 |ecn<<64 | length<<48 | id<<32 | flags<<29 | frag<<16 | ttl<<8 | protocol # 80 bits
-    checksum = calc_checksum(before_checksum<<80 | 0<<64 | s_addr<<32 | d_addr)
+    checksum = calc_checksum((before_checksum<<80 | 0<<64 | s_addr<<32 | d_addr).to_bytes(20, 'big'))
     header = before_checksum<<80 | checksum<<64 | s_addr<<32 | d_addr
     
-    return header
+    return header.to_bytes(20, 'big')
 
 def build_ttl_exceded_icmp_header(*, type, code, datagrama):
     before_checksum = type<<8 | code
-    checksum = calc_checksum(before_checksum<<496 | 0<<480 | 0<<416 | datagrama>>416)
-    header = before_checksum<<496 | checksum<<480 | 0<<416 | datagrama>>416
+    checksum = calc_checksum((before_checksum<<48 | 0<<32 | 0).to_bytes(8, 'big') + datagrama[:416])
+    header = (before_checksum<<48 | checksum<<32 | 0).to_bytes(8, 'big') + datagrama[:416]
 
     return header
